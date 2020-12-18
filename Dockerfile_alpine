@@ -1,0 +1,111 @@
+# Importing node14 docker image
+# FROM node:14
+
+FROM alpine:3.11
+ENV VERSION=v14.15.1 NPM_VERSION=6 YARN_VERSION=v1.22.10 NODE_BUILD_PYTHON=python3
+
+RUN apk upgrade --no-cache -U && \
+  apk add --no-cache curl make gcc g++ ${NODE_BUILD_PYTHON} linux-headers binutils-gold gnupg libstdc++
+
+RUN for server in ipv4.pool.sks-keyservers.net keyserver.pgp.com ha.pool.sks-keyservers.net; do \
+    gpg --keyserver $server --recv-keys \
+      4ED778F539E3634C779C87C6D7062848A1AB005C \
+      94AE36675C464D64BAFA68DD7434390BDBE9B9C5 \
+      1C050899334244A8AF75E53792EF661D867B9DFA \
+      71DCFD284A79C3B38668286BC97EC7A07EDE3FC1 \
+      8FCCA13FEF1D0C2E91008E09770F7A9A5AE15600 \
+      C4F0DFFF4E8C1A8236409D08E73BC641CC11F4C8 \
+      C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C \
+      DD8F2338BAE7501E3DD5AC78C273792F7D83545D \
+      A48C2BEE680E841632CD4E44F07496B3EB3C1762 \
+      108F52B48DB57BB0CC439B2997B01419BD92F80A \
+      B9E2F5981AA6E0CD28160D9FF13993A75599653C && break; \
+  done
+
+RUN curl -sfSLO https://nodejs.org/dist/${VERSION}/node-${VERSION}.tar.xz && \
+  curl -sfSL https://nodejs.org/dist/${VERSION}/SHASUMS256.txt.asc | gpg -d -o SHASUMS256.txt && \
+  grep " node-${VERSION}.tar.xz\$" SHASUMS256.txt | sha256sum -c | grep ': OK$' && \
+  tar -xf node-${VERSION}.tar.xz && \
+  cd node-${VERSION} && \
+  ./configure --prefix=/usr ${CONFIG_FLAGS} && \
+  make -j$(getconf _NPROCESSORS_ONLN) && \
+  make install
+
+RUN if [ -z "$CONFIG_FLAGS" ]; then \
+    if [ -n "$NPM_VERSION" ]; then \
+      npm install -g npm@${NPM_VERSION}; \
+    fi; \
+    find /usr/lib/node_modules/npm -type d \( -name test -o -name .bin \) | xargs rm -rf; \
+    if [ -n "$YARN_VERSION" ]; then \
+      for server in ipv4.pool.sks-keyservers.net keyserver.pgp.com ha.pool.sks-keyservers.net; do \
+        gpg --keyserver $server --recv-keys \
+          6A010C5166006599AA17F08146C2130DFD2497F5 && break; \
+      done && \
+      curl -sfSL -O https://github.com/yarnpkg/yarn/releases/download/${YARN_VERSION}/yarn-${YARN_VERSION}.tar.gz -O https://github.com/yarnpkg/yarn/releases/download/${YARN_VERSION}/yarn-${YARN_VERSION}.tar.gz.asc && \
+      gpg --batch --verify yarn-${YARN_VERSION}.tar.gz.asc yarn-${YARN_VERSION}.tar.gz && \
+      mkdir /usr/local/share/yarn && \
+      tar -xf yarn-${YARN_VERSION}.tar.gz -C /usr/local/share/yarn --strip 1 && \
+      ln -s /usr/local/share/yarn/bin/yarn /usr/local/bin/ && \
+      ln -s /usr/local/share/yarn/bin/yarnpkg /usr/local/bin/ && \
+      rm yarn-${YARN_VERSION}.tar.gz*; \
+    fi; \
+  fi
+
+RUN apk del curl make gcc g++ ${NODE_BUILD_PYTHON} linux-headers binutils-gold gnupg ${DEL_PKGS} && \
+  rm -rf ${RM_DIRS} /node-${VERSION}* /SHASUMS256.txt /tmp/* \
+    /usr/share/man/* /usr/share/doc /root/.npm /root/.node-gyp /root/.config \
+    /usr/lib/node_modules/npm/man /usr/lib/node_modules/npm/doc /usr/lib/node_modules/npm/docs \
+    /usr/lib/node_modules/npm/html /usr/lib/node_modules/npm/scripts && \
+  { rm -rf /root/.gnupg || true; }
+
+# Install nano for debug
+RUN apt-get update
+RUN apt-get install nano
+
+# Add Tini
+ENV TINI_VERSION v0.19.0
+ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
+RUN chmod +x /tini
+ENTRYPOINT ["/tini", "--"]
+
+# Installing restroom
+RUN npx degit dyne/restroom-template restroom-mw
+
+# setup docker
+WORKDIR /restroom-mw
+EXPOSE 3300 
+EXPOSE 3301 
+
+# Adding the .env file
+RUN touch .env
+RUN echo 'ZENCODE_DIR=/restroom-mw/zencode\n\
+CUSTOM_404_MESSAGE=nothing to see here\n\
+HTTP_PORT=3300\n\
+HTTPS_PORT=3301\n'\
+> /restroom-mw/.env
+
+# Adding the exported files
+RUN echo "Adding exported contracts from apiroom"
+RUN echo "Scenario 'ecdh': Create the keypair\nGiven that I am known as 'Alice'\nWhen I create the keypair\nThen print my data\n"> ./zencode/Create-a-keypair.zen
+RUN echo "Rule unknown ignore \nScenario 'ecdh': Create the keypair \n\n# [R] Restroom-mw statements: state endpoints\nGiven that I have an endpoint named 'timeServer'  \nGiven that I have an endpoint named 'outputEndpoint'  \n\n# We need this object to store the output of the timestamp endpoint\nGiven I have a 'number' named 'timestamp'\n\n# [R] Restroom-mw statements: connect to endpoints and store the output\nGiven I connect to 'timeServer' and save the output into 'timestamp'\n\n# Let's create an array of random objects\nWhen I create the array of '8' random objects of '256' bits\nand I rename the 'array' to 'randomArray'\n\n# Create a string dictionary to format the output \nWhen I create the 'base64 dictionary'\nand I rename the 'base64 dictionary' to 'outputData'\n\n# Organize the output of the endpoints in the string dictionary\nWhen I insert 'timestamp' in 'outputData'\nWhen I insert 'randomArray' in 'outputData'\n\n# Informative string\nWhen I write string 'see the results in https://beeceptor.com/console/dyneorg' in 'outputString'\n\n# Print the output\nThen print all data\n\n# [R] Restroom-mw statements: send the output to an endpoint via a REST call  \nThen pass the output to 'outputEndpoint'\n\n\n"> ./zencode/http-save-output-to-endpoint.zen
+RUN echo '{"timeServer":"http://showcase.api.linx.twenty57.net/UnixTime/tounix?date=now","outputEndpoint":"https://dyneorg.free.beeceptor.com"}' > ./zencode/http-save-output-to-endpoint.keys
+
+# Debugging lines
+RUN ls -al
+RUN cat .env
+RUN ls -al ./zencode
+RUN cat .env
+
+# yarn install and run
+RUN yarn
+
+# CMD yarn start
+CMD ["yarn", "start"]
+
+
+
+
+
+
+ 
+
