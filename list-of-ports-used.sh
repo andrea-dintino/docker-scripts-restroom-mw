@@ -1,0 +1,1 @@
+netstat -tanp | grep LISTEN
