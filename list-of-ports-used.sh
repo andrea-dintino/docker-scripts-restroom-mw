@@ -1,1 +1,1 @@
-netstat -tanp | grep LISTEN
+sudo netstat -tanp | grep LISTEN
